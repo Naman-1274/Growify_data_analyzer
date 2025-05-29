@@ -46,17 +46,12 @@ if uploaded is not None:
 
         # Preview dataset
         with st.expander("📄 Preview DataFrame"):
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df.head(15), use_container_width=True)
 
         # User question input
         question = st.text_input("Ask a question about your dataset:")
-        regen = st.button("🔄 Regenerate Last Response")
-
-        if regen and st.session_state["last_question"] is None:
-            st.warning("⚠️ No previous question to regenerate.")
-            regen = False
-
-        if question or regen:
+    
+        if question:
             current_q = question if question else st.session_state["last_question"]
 
             # Build context: snippet, stats, history
@@ -66,22 +61,29 @@ if uploaded is not None:
 
             # Comparison instructions: let Gemini decide how to compute prev/next or runner-up
             comparison_instr = (
-                "Also compute a relevant comparison metric: "
-                "if this is a time-based question, compute the same metric for the previous and next period "
-                "(store in prev_metric and next_metric). "
-                "If this is a ranking question, compute the runner-up value (store in second_metric and second_label)."
+                "Also compute a relevant comparison metric:\n"
+                "• If this is a time‐based question, compute the same metric for the previous and next period "
+                "(store in prev_metric and next_metric).\n"
+                "  For example, if they ask “sales in March 2025 vs February 2025,” then:\n"
+                "    main_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-03', freq='M')]['Total Sales (INR)'].sum()\n"
+                "    prev_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-02', freq='M')]['Total Sales (INR)'].sum()\n"
+                "    next_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-04', freq='M')]['Total Sales (INR)'].sum()\n"
+                "• If this is a ranking question, compute the runner‐up value (store in second_metric and second_label).\n"
             )
 
             # Assemble the code-generation prompt
             code_prompt = (
                 "You are a Python/Pandas expert. A pandas DataFrame named `df` is loaded in memory, "
-                "and `import pandas as pd` (and `import matplotlib.pyplot as plt`) have been run.\n\n"
+                "and 'import pandas as pd' and 'import numpy as np' (and 'import matplotlib.pyplot as plt')  You also have access to 'scipy as stats' and 'seaborn as sns'.\n\n"
+                "and can create visualizations if needed or the user requests it.\n\n"
                 "Below are the column names, types, and a small data sample from `df`:\n\n"
                 "=== Column Summaries ===\n"
                 f"{summaries}\n\n"
                 "=== Data Sample (Markdown) ===\n"
                 f"{snippet}\n\n"
                 "When given a user question, you must generate **only valid Python code** that runs against `df` to compute the answer. "
+                "if the question is about trends, comparisons, or time-series data, also generate a plot. "
+                "Use 'plt.subplots()' and store the plot in 'main_plot_fig'. "
                 "Ensure the final result of the main query is stored in a variable named `main_metric`.\n"
                 f"{comparison_instr}\n\n"
                 "User's question:\n"
@@ -102,8 +104,8 @@ if uploaded is not None:
 
             if gemini_code:
                 # Display generated code
-                st.markdown("### 📝 Generated Python Code")
-                st.code(gemini_code, language="python")
+                with st.expander("### 📝 Generated Python Code"):
+                    st.code(gemini_code, language="python")
 
                 # Execute the code and capture all variables
                 with st.spinner("⚙️ Executing generated code..."):
@@ -116,11 +118,17 @@ if uploaded is not None:
 
                 # Display computed metrics as a DataFrame
                 if exec_locals:
-                    st.markdown("### 📊 Computed Metrics")
-                    metrics_df = pd.DataFrame(
-                        list(exec_locals.items()), columns=["variable", "value"]
-                    )
-                    st.dataframe(metrics_df, use_container_width=True)
+                    with st.expander("### 📊 Computed Metrics"):
+                        metrics_df = pd.DataFrame(
+                            [(k, v) for k, v in exec_locals.items() if k != "main_plot_fig"], 
+                                columns=["variable", "value"]
+                        )
+                        st.dataframe(metrics_df, use_container_width=True)
+
+                if 'main_plot_fig' in exec_locals:
+                    st.markdown("### 📈 Generated Plot")
+                    with st.expander("Plot"):
+                        st.pyplot(exec_locals['main_plot_fig'])
 
                     # Prepare metrics text for summary prompt
                     metrics_text = "\n".join(f"• {k}: {v}" for k, v in exec_locals.items())
@@ -172,15 +180,26 @@ if uploaded is not None:
                 # Record conversation
                 if question:
                     st.session_state["last_question"] = question
-                st.session_state["memory_log"].append({"input": current_q, "output": gemini_code})
-                st.session_state["messages"].append((current_q, gemini_code))
+
+                # Fallback if summary or recommendation is None
+                summary_text = summary or "Summary not available."
+                recommendation_text = recommendation or "Recommendation not available."
+
+                st.session_state["memory_log"].append({"input": current_q, "output": summary_text})
+                st.session_state["messages"].append({
+                    "question": current_q,
+                    "summary": summary_text,
+                    "recommendation": recommendation_text
+                })
 
         # Display chat history of questions and code
         if st.session_state["messages"]:
-            st.markdown("### 💬 Chat History (Question → Generated Code)")
-            for q, a_code in reversed(st.session_state["messages"]):
-                st.markdown(f"**You:** {q}")
-                st.markdown("```python\n" + a_code + "\n```")
+            st.markdown("### 💬 Chat History (Summary + Recommendations)")
+            for entry in reversed(st.session_state["messages"]):
+                st.markdown(f"**🧠 You asked:** {entry['question']}")
+                st.markdown(f"**✍️ Summary:** {entry['summary']}")
+                st.markdown(f"**📈 Recommendation:** {entry['recommendation']}")
+                st.markdown("---")
 
     except DataIngestionError as die:
         st.error(f"❌ Data ingestion error: {die}")
