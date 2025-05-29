@@ -4,6 +4,7 @@ import google.generativeai as genai
 from src.Test_red.exception import ModelAPIError
 from src.Test_red.logger import logger
 from dotenv import load_dotenv
+from src.Test_red.exception import ModelAPIError
 
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
@@ -48,3 +49,18 @@ def generate_response(prompt: str) -> str:
     except Exception as e:
         logger.error(f"Gemini API call failed: {e}")
         raise ModelAPIError(f"Gemini API call failed: {e}")
+
+def generate_marketing_recommendations(prompt: str) -> str:
+    """
+    Calls Gemini (or another LLM) with a marketing‐expert prompt that 
+    translates computed metrics & summary into actionable recommendations.
+    Returns a plain‐text block of recommendations.
+    """
+    # If you have a separate MODEL name or temperature tuning for recommendations,
+    # you could add that here. For simplicity, we reuse generate_response.
+    try:
+        return generate_response(prompt)
+    except ModelAPIError as e:
+        raise ModelAPIError(f"Error generating marketing recommendations: {e}")
+    except Exception as e:
+        raise ModelAPIError(f"Unexpected error: {e}")

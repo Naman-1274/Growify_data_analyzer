@@ -146,6 +146,28 @@ if uploaded is not None:
                     if summary:
                         st.markdown("### ✍️ Summary")
                         st.write(summary)
+                        
+                        
+                        # === Strategic Recommendation AI ===
+                        rec_prompt = (
+                            "You are a senior marketing strategist or a CEO. Based on the user's question, "
+                            "the dataset structure, and the computed metrics, provide a clear recommendation for action. "
+                            "This might include campaign adjustments, budget shifts, timing strategies, or deeper analysis directions.\n\n"
+                            f"User's question:\n\"\"\"{current_q}\"\"\"\n\n"
+                            f"Computed metrics:\n{metrics_text}\n\n"
+                            "Deliver your advice in 2–4 concise bullet points with a focus on ROI, customer acquisition, and growth strategy. "
+                            "Be direct and actionable like a marketing leader in a business meeting."
+                        )
+
+                        with st.spinner("📈 Generating strategic recommendation..."):
+                            try:
+                                recommendation = generate_response(rec_prompt)
+                                st.markdown("### 📈 Strategic Recommendation")
+                                st.write(recommendation)
+                            except ModelAPIError as e:
+                                st.error(f"❌ Error generating recommendation: {e}")
+                            except Exception as e:
+                                st.error(f"⚠️ Unexpected error during recommendation: {e}")
 
                 # Record conversation
                 if question:
