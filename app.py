@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import tempfile
 import os
+import re
 from dotenv import load_dotenv
 
 from src.Test_red.app_backend.ingest import load_csv_file
@@ -10,22 +12,30 @@ from src.Test_red.app_backend.code_executor import execute_code_snippet, CodeExe
 from src.Test_red.utils import df_to_markdown_full, get_column_summaries
 from src.Test_red.exception import ModelAPIError, DataIngestionError
 
-# Load environment variables
+# -----------------------------
+# 1) Load environment variables
+# -----------------------------
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     st.error("❌ Gemini API key missing. Add it to your .env file as GEMINI_API_KEY.")
     st.stop()
 
-# Page config
+# -----------------------------
+# 2) Streamlit page config
+# -----------------------------
 st.set_page_config(page_title="📊 Chat with Your Dataset (Enhanced)", layout="wide")
 st.title("📊 Chat with Your Dataset (Gemini + Advanced Summary)")
 
-# Sidebar: file upload
+# -----------------------------
+# 3) Sidebar file uploader
+# -----------------------------
 st.sidebar.header("Upload a file (CSV/Excel)")
 uploaded = st.sidebar.file_uploader("Choose a dataset", type=["csv", "xlsx", "xls"])
 
-# Initialize session state
+# -----------------------------
+# 4) Initialize session_state
+# -----------------------------
 for key, default in [
     ("messages", []),
     ("memory_log", []),
@@ -34,64 +44,138 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
+# ------------------------------------
+# 5) Define the enhanced validation
+# ------------------------------------
+# A small set of English stopwords. Expand as needed.
+STOPWORDS = {
+    "the", "is", "in", "at", "of", "for", "to", "a", "an",
+    "and", "or", "but", "if", "what", "which", "on", "by",
+    "with", "as", "that", "this", "these", "those", "from",
+    "be", "been", "are", "was", "were", "how", "when", "where",
+    "why", "who", "whom", "can", "could", "should", "would",
+    "do", "does", "did", "my", "your", "our", "their", "its"
+}
+
+def is_question_valid(text: str, df: pd.DataFrame) -> bool:
+    """
+    Returns False if the question is too short, too generic, or doesn't mention any column name.
+    1) Require at least two non-empty tokens.
+    2) Require at least one alphabetic character.
+    3) Strip punctuation, lowercase, remove stopwords, and check if any remaining token matches a column name.
+    """
+    # 1) Tokenize and require ≥ 2 tokens
+    tokens = [t for t in re.split(r"\s+", text.strip()) if t]
+    if len(tokens) < 2:
+        return False
+
+    # 2) Must have at least one letter (reject “1234”)
+    if not any(c.isalpha() for c in text):
+        return False
+
+    # 3) Normalize tokens: lowercase & strip leading/trailing punctuation
+    normalized = []
+    for t in tokens:
+        w = t.lower().strip(".,!?\"'():;")
+        if w:
+            normalized.append(w)
+
+    if not normalized:
+        return False
+
+    # 4) Remove stopwords
+    meaningful = [w for w in normalized if w not in STOPWORDS]
+    if len(meaningful) < 1:
+        return False
+
+    # 5) Check if any meaningful token matches a column name (substring match)
+    lower_columns = [col.lower() for col in df.columns]
+    for w in meaningful:
+        for col in lower_columns:
+            if w in col or col in w:
+                return True
+
+    # If no match was found, reject
+    return False
+
+# ---------------------------------------
+# 6) Main logic: only run if ‘uploaded’ exists
+# ---------------------------------------
 if uploaded is not None:
     try:
-        # Save upload to temp and load into DataFrame
+        # 6.1) Save uploaded file to a temp path
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded.name)[1]) as tmp:
             tmp.write(uploaded.read())
             tmp_path = tmp.name
 
+        # 6.2) Load DataFrame
         df = load_csv_file(tmp_path)
         st.success("✅ Data loaded into a DataFrame!")
 
-        # Preview dataset
+        # 6.3) Show a preview of the DataFrame
         with st.expander("📄 Preview DataFrame"):
             st.dataframe(df.head(15), use_container_width=True)
 
-        # User question input
+        # 6.4) Ask the user for a question
         question = st.text_input("Ask a question about your dataset:")
-    
-        if question:
-            current_q = question if question else st.session_state["last_question"]
 
-            # Build context: snippet, stats, history
+        if question:
+            # 6.4a) Early sanity check for illogical questions
+            if not is_question_valid(question, df):
+                st.warning(
+                    "❗ Your question seems too short, too generic, or doesn’t reference any column.  \n"
+                    "Please ask something more specific—e.g.:  \n"
+                    "• “Total Sales (INR) by Region in Q1 2025”  \n"
+                    "• “Average Units Sold by Product Category”  \n"
+                    "• “Trend of Ads Spends (INR) over time”"
+                )
+                st.stop()
+
+            # 6.4b) Initialize summary & recommendation so they never cause NameError
+            summary = None
+            recommendation = None
+
+            # 6.5) Build context for Gemini: column summaries & sample snippet
             snippet = df_to_markdown_full(df)
             summaries = get_column_summaries(df)
             history = [(item["input"], item["output"]) for item in st.session_state["memory_log"]]
 
-            # Comparison instructions: let Gemini decide how to compute prev/next or runner-up
+            # 6.6) Define comparison instructions
             comparison_instr = (
                 "Also compute a relevant comparison metric:\n"
-                "• If this is a time‐based question, compute the same metric for the previous and next period "
-                "(store in prev_metric and next_metric).\n"
-                "  For example, if they ask “sales in March 2025 vs February 2025,” then:\n"
+                "• If this is a time‐based question, compute prev_metric and next_metric.\n"
+                "  For example, “sales in March 2025 vs February 2025” →\n"
                 "    main_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-03', freq='M')]['Total Sales (INR)'].sum()\n"
                 "    prev_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-02', freq='M')]['Total Sales (INR)'].sum()\n"
                 "    next_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-04', freq='M')]['Total Sales (INR)'].sum()\n"
-                "• If this is a ranking question, compute the runner‐up value (store in second_metric and second_label).\n"
+                "• If this is a ranking question, compute the runner‐up (second_metric and second_label).\n"
             )
 
-            # Assemble the code-generation prompt
+            # 6.7) Construct the Gemini code prompt
             code_prompt = (
                 "You are a Python/Pandas expert. A pandas DataFrame named `df` is loaded in memory, "
-                "and 'import pandas as pd' and 'import numpy as np' (and 'import matplotlib.pyplot as plt')  You also have access to 'scipy as stats' and 'seaborn as sns'.\n\n"
-                "and can create visualizations if needed or the user requests it.\n\n"
-                "Below are the column names, types, and a small data sample from `df`:\n\n"
-                "=== Column Summaries ===\n"
+                "and the following imports are available:\n"
+                "```python\n"
+                "import pandas as pd\n"
+                "import numpy as np\n"
+                "import matplotlib.pyplot as plt\n"
+                "import seaborn as sns\n"
+                "import scipy.stats as stats\n"
+                "```\n\n"
+                "Below are the column summaries (name and type):\n"
                 f"{summaries}\n\n"
-                "=== Data Sample (Markdown) ===\n"
+                "Below is a small data sample (Markdown table):\n"
                 f"{snippet}\n\n"
-                "When given a user question, you must generate **only valid Python code** that runs against `df` to compute the answer. "
-                "if the question is about trends, comparisons, or time-series data, also generate a plot. "
-                "Use 'plt.subplots()' and store the plot in 'main_plot_fig'. "
-                "Ensure the final result of the main query is stored in a variable named `main_metric`.\n"
+                "When given a user question, generate **only valid Python code** that runs against `df`.  \n"
+                "- If the question is about trends or time‐series, also generate a plot using `plt.subplots()` and store it in `main_plot_fig`.  \n"
+                "- Ensure the primary numeric result is stored in `main_metric`.  \n"
                 f"{comparison_instr}\n\n"
                 "User's question:\n"
-                f"\"\"\"{current_q}\"\"\"\n\n"
+                f"\"\"\"{question}\"\"\"\n\n"
                 "# Write Python code below (only code, no commentary):"
             )
 
-            # Call Gemini to get Pandas code
+            # 6.8) Call Gemini to generate the Pandas code
             with st.spinner("🧠 Generating Pandas code..."):
                 try:
                     gemini_code = generate_code_from_gemini(code_prompt)
@@ -103,44 +187,46 @@ if uploaded is not None:
                     gemini_code = None
 
             if gemini_code:
-                # Display generated code
+                # 6.9) Display the generated code in an expander
                 with st.expander("### 📝 Generated Python Code"):
                     st.code(gemini_code, language="python")
 
-                # Execute the code and capture all variables
+                # 6.10) Execute the code snippet
                 with st.spinner("⚙️ Executing generated code..."):
                     try:
-                        # return_all_vars=True returns a dict of all variables Gemini assigned
                         exec_locals = execute_code_snippet(gemini_code, df, return_all_vars=True)
                     except CodeExecutionError as ce:
                         st.error(f"❌ Code execution error:\n{ce}")
                         exec_locals = {}
 
-                # Display computed metrics as a DataFrame
+                # 6.11) If exec_locals has content, display metrics & plot
                 if exec_locals:
+                    # 6.11a) Display computed metrics (excluding any figure)
                     with st.expander("### 📊 Computed Metrics"):
                         metrics_df = pd.DataFrame(
-                            [(k, v) for k, v in exec_locals.items() if k != "main_plot_fig"], 
-                                columns=["variable", "value"]
+                            [(k, v) for k, v in exec_locals.items() if k != "main_plot_fig"],
+                            columns=["variable", "value"]
                         )
                         st.dataframe(metrics_df, use_container_width=True)
 
-                if 'main_plot_fig' in exec_locals:
-                    st.markdown("### 📈 Generated Plot")
-                    with st.expander("Plot"):
-                        st.pyplot(exec_locals['main_plot_fig'])
+                    # 6.11b) If a figure was generated, show it
+                    if "main_plot_fig" in exec_locals:
+                        st.markdown("### 📈 Generated Plot")
+                        with st.expander("Plot"):
+                            st.pyplot(exec_locals["main_plot_fig"])
 
-                    # Prepare metrics text for summary prompt
+                    # 6.12) Build a bullet list of metrics for prompting Gemini
                     metrics_text = "\n".join(f"• {k}: {v}" for k, v in exec_locals.items())
+
+                    # 6.13) Generate a 2–3 sentence summary via Gemini
                     summary_prompt = (
                         "You are a concise marketing analyst. The user's question was:\n"
-                        f"\"\"\"{current_q}\"\"\"\n\n"
+                        f"\"\"\"{question}\"\"\"\n\n"
                         "We computed:\n"
                         f"{metrics_text}\n\n"
-                        "In 2–3 sentences, provide a brief, actionable summary that highlights the main finding and how it compares to the other metrics."
+                        "In 2–3 sentences, provide a brief, actionable summary that highlights the main finding "
+                        "and how it compares to the other metrics."
                     )
-
-                    # Get summary from Gemini
                     with st.spinner("💬 Generating summary..."):
                         try:
                             summary = generate_response(summary_prompt)
@@ -154,45 +240,57 @@ if uploaded is not None:
                     if summary:
                         st.markdown("### ✍️ Summary")
                         st.write(summary)
-                        
-                        
-                        # === Strategic Recommendation AI ===
-                        rec_prompt = (
-                            "You are a senior marketing strategist or a CEO. Based on the user's question, "
-                            "the dataset structure, and the computed metrics, provide a clear recommendation for action. "
-                            "This might include campaign adjustments, budget shifts, timing strategies, or deeper analysis directions.\n\n"
-                            f"User's question:\n\"\"\"{current_q}\"\"\"\n\n"
-                            f"Computed metrics:\n{metrics_text}\n\n"
-                            "Deliver your advice in 2–4 concise bullet points with a focus on ROI, customer acquisition, and growth strategy. "
-                            "Be direct and actionable like a marketing leader in a business meeting."
-                        )
+                    else:
+                        st.markdown("### ✍️ Summary")
+                        st.info("Summary not available.")
 
-                        with st.spinner("📈 Generating strategic recommendation..."):
-                            try:
-                                recommendation = generate_response(rec_prompt)
-                                st.markdown("### 📈 Strategic Recommendation")
-                                st.write(recommendation)
-                            except ModelAPIError as e:
-                                st.error(f"❌ Error generating recommendation: {e}")
-                            except Exception as e:
-                                st.error(f"⚠️ Unexpected error during recommendation: {e}")
+                    # 6.14) Generate 2–4 bullet point strategic recommendation
+                    rec_prompt = (
+                        "You are a senior marketing strategist or a CEO. Based on the user's question, "
+                        "the dataset structure, and the computed metrics, provide a clear recommendation for action. "
+                        "This might include campaign adjustments, budget shifts, timing strategies, or deeper analysis directions.\n\n"
+                        f"User's question:\n\"\"\"{question}\"\"\"\n\n"
+                        f"Computed metrics:\n{metrics_text}\n\n"
+                        "Deliver your advice in 2–4 concise bullet points with a focus on ROI, customer acquisition, and growth strategy. "
+                        "Be direct and actionable like a marketing leader in a business meeting."
+                    )
+                    with st.spinner("📈 Generating strategic recommendation..."):
+                        try:
+                            recommendation = generate_response(rec_prompt)
+                        except ModelAPIError as e:
+                            st.error(f"❌ Error generating recommendation: {e}")
+                            recommendation = None
+                        except Exception as e:
+                            st.error(f"⚠️ Unexpected error during recommendation: {e}")
+                            recommendation = None
 
-                # Record conversation
-                if question:
-                    st.session_state["last_question"] = question
+                    if recommendation:
+                        st.markdown("### 📈 Strategic Recommendation")
+                        st.write(recommendation)
+                    else:
+                        st.markdown("### 📈 Strategic Recommendation")
+                        st.info("Recommendation not available.")
 
-                # Fallback if summary or recommendation is None
-                summary_text = summary or "Summary not available."
-                recommendation_text = recommendation or "Recommendation not available."
+                else:
+                    # Code ran but returned no variables (likely snippet failed)
+                    st.error("❌ Code executed but returned no variables. Unable to compute metrics.")
 
-                st.session_state["memory_log"].append({"input": current_q, "output": summary_text})
+                # 6.15) Guarantee summary_text & recommendation_text exist
+                summary_text = summary if summary is not None else "Summary not available."
+                recommendation_text = (
+                    recommendation if recommendation is not None else "Recommendation not available."
+                )
+
+                # 6.16) Record conversation in session_state
+                st.session_state["last_question"] = question
+                st.session_state["memory_log"].append({"input": question, "output": summary_text})
                 st.session_state["messages"].append({
-                    "question": current_q,
+                    "question": question,
                     "summary": summary_text,
                     "recommendation": recommendation_text
                 })
 
-        # Display chat history of questions and code
+        # 7) Display chat history if any
         if st.session_state["messages"]:
             st.markdown("### 💬 Chat History (Summary + Recommendations)")
             for entry in reversed(st.session_state["messages"]):
@@ -208,7 +306,9 @@ if uploaded is not None:
 else:
     st.info("👈 Upload a CSV or Excel file to begin.")
 
-# Styling for buttons
+# -----------------------------
+# 8) Optional: CSS styling for buttons
+# -----------------------------
 st.markdown(
     """
     <style>

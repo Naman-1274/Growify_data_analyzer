@@ -1,64 +1,52 @@
-# src/Test_red/app_backend/code_executor.py
-
 import pandas as pd
-import ast
-import traceback
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.stats as stats
 
 class CodeExecutionError(Exception):
-    """Raised when code execution fails."""
+    """Raised when the dynamically generated code snippet fails to execute."""
     pass
 
-def execute_code_snippet(code: str, df: pd.DataFrame, return_all_vars: bool = False):
+def execute_code_snippet(code: str, df: pd.DataFrame, return_all_vars: bool = False) -> dict:
     """
-    Executes the given Python code (as a string) in a restricted namespace where:
-      - 'df' is the uploaded DataFrame (a copy)
-      - 'pd' is pandas
-    If return_all_vars=True, return a dict of all variables Gemini assigned (excluding 'pd' and 'df').
-    Otherwise, return a single 'result' or last expression as before.
-    Performs a syntax check (ast.parse) before execution to catch indentation/syntax errors early.
-    Raises CodeExecutionError if anything goes wrong.
+    Executes a Gemini‐generated code snippet, but preloads the global namespace with:
+      - pandas as pd
+      - numpy as np
+      - matplotlib.pyplot as plt
+      - seaborn as sns
+      - scipy.stats as stats
+      - the DataFrame `df`
+    Any exception is caught and rethrown as CodeExecutionError.
+
+    Args:
+        code:         A block of valid Python code (string) that references `df`, `pd`, `np`, etc.
+        df:           The pandas DataFrame on which the code should operate.
+        return_all_vars: If True, return a dict of all local variables created by the snippet.
+                         Otherwise, return an empty dict.
+
+    Returns:
+        local_vars (dict): All variables defined in the snippet if return_all_vars=True, else {}.
     """
-    # 1) Basic syntax validation
+    # 1) Build a globals dict so that the snippet sees pd, np, plt, sns, stats, and df.
+    preamble_globals = {
+        "pd": pd,
+        "np": np,
+        "plt": plt,
+        "sns": sns,
+        "stats": stats,
+        "df": df,
+    }
+
+    local_vars = {}
     try:
-        ast.parse(code)
-    except SyntaxError as syn_err:
-        raise CodeExecutionError(f"Syntax error in generated code:\n{syn_err}")
-
-    # 2) Prepare the execution namespace
-    local_vars = {"pd": pd, "df": df.copy()}
-    try:
-        lines = code.strip().splitlines()
-        if not lines:
-            return {} if return_all_vars else None
-
-        body_lines = lines[:-1]
-        last_line = lines[-1]
-
-        # Execute all but the last line
-        if body_lines:
-            exec("\n".join(body_lines), {}, local_vars)
-
-        # Try to eval the last line; if that fails, exec it instead
-        try:
-            last_val = eval(last_line, {}, local_vars)
-        except Exception:
-            exec(last_line, {}, local_vars)
-            last_val = None
-
-        # If caller wants all variables, return everything except 'pd' and 'df'
-        if return_all_vars:
-            return {k: v for k, v in local_vars.items() if k not in ("pd", "df")}
-
-        # Otherwise, return 'result' if present, else last_val or common variable names
-        if "result" in local_vars:
-            return local_vars["result"]
-        if isinstance(last_val, (pd.DataFrame, pd.Series, int, float, str, list, dict)):
-            return last_val
-        for var_name in ["df_result", "output", "res"]:
-            if var_name in local_vars:
-                return local_vars[var_name]
-        return None
-
+        # Execute the snippet. Any variable assigned in `code` ends up in local_vars.
+        exec(code, preamble_globals, local_vars)
     except Exception as e:
-        tb = traceback.format_exc()
-        raise CodeExecutionError(f"{e}\nTraceback:\n{tb}")
+        # Wrap any error as CodeExecutionError so calling code can catch it.
+        raise CodeExecutionError(str(e))
+
+    if return_all_vars:
+        return local_vars
+    else:
+        return {}
