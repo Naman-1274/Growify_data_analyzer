@@ -39,27 +39,35 @@ def build_conversational_prompt(
 ) -> str:
     """
     Assemble the System + Context + History + Question into one Gemini‐ready prompt.
+    We explicitly tell Gemini that the full DataFrame is available as `df` in memory,
+    and that the snippet is only a small sample.
     """
     system_msg = (
-        "You are a highly capable data-analysis assistant. The user will upload a dataset, "
-        "and you will first review the table schema (column names and types) and a small sample of rows. "
-        "Next, you will review the full conversation history, including the user’s last question. "
-        "Then, provide a precise, data-driven answer that directly addresses their latest query. "
+        "You are a highly capable data‐analysis assistant. The user has just uploaded a "
+        "dataset; in Python, that dataset is already loaded as a pandas DataFrame named `df`.  \n"
+        "When you write code, you should always operate on the full DataFrame (`df`)—"
+        "the snippet below is just a small sample.  \n"
+        "Next, you will review the table schema (column names and types) and a small sample of rows. "
+        "Then review the full conversation history, including the user’s last question. "
+        "Finally, provide a precise, data‐driven answer that directly addresses their latest query.  \n"
         "Always:\n"
         "  1. Reference specific column names and values from the data.\n"
         "  2. Include any relevant calculations or summary statistics.\n"
         "  3. Highlight patterns, trends, or anomalies backed by the data.\n"
         "  4. Offer concise recommendations or next steps when appropriate.\n"
-        "Avoid generic summaries—be concrete, analytical, and results-oriented."
+        "Avoid generic summaries—be concrete, analytical, and results‐oriented."
     )
 
     context = (
-        "=== Dataset Overview ===\n"
+        "=== Dataset Context ===\n"
+        "*(The full DataFrame is already loaded in memory as `df`. The table below is just a small sample.)*\n\n"
+        "=== Column Summaries ===\n"
         f"{column_summaries}\n\n"
-        "=== Data Sample ===\n"
+        "=== Data Sample (first/last rows) ===\n"
         f"{df_snippet}\n"
     )
 
+    # Rebuild history into a single block
     history_block = ""
     for speaker, text in history:
         role = "User" if speaker.lower() == "you" else "Assistant"
@@ -67,9 +75,10 @@ def build_conversational_prompt(
 
     prompt = (
         f"{system_msg}\n\n"
-        f"{context}\n"
+        f"{context}\n\n"
         "=== Conversation History ===\n"
         f"{history_block}\n"
         f"User: {user_question}\nAssistant:"
     )
     return prompt
+

@@ -137,18 +137,26 @@ if uploaded is not None:
 
             # 6.5) Build context for Gemini: column summaries & sample snippet
             snippet = df_to_markdown_full(df)
-            summaries = get_column_summaries(df)
+            summaries =     (df)
             history = [(item["input"], item["output"]) for item in st.session_state["memory_log"]]
 
             # 6.6) Define comparison instructions
             comparison_instr = (
-                "Also compute a relevant comparison metric:\n"
-                "• If this is a time‐based question, compute prev_metric and next_metric.\n"
-                "  For example, “sales in March 2025 vs February 2025” →\n"
-                "    main_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-03', freq='M')]['Total Sales (INR)'].sum()\n"
-                "    prev_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-02', freq='M')]['Total Sales (INR)'].sum()\n"
-                "    next_metric = df[df['Date'].dt.to_period('M') == pd.Period('2025-04', freq='M')]['Total Sales (INR)'].sum()\n"
-                "• If this is a ranking question, compute the runner‐up (second_metric and second_label).\n"
+                "First, examine the raw DataFrame `df` and perform **any** preprocessing, cleaning, "
+                "filtering, or column transformations needed by the user's question.  \n"
+                "Always store the final, cleaned DataFrame in a new variable called `df_processed`.  \n"
+                "From that point onward, run every computation, grouping, and plot on `df_processed`, "
+                "never on the original `df`.  \n\n"
+                "Next, for time‐based questions, compute prev_metric and next_metric by comparing months in `df_processed`.  \n"
+                "  For example:\n"
+                "    # (no need to convert Period to float—compare via .dt.to_period('M'))\n"
+                "    main_metric = df_processed[df_processed['Date'].dt.to_period('M') == pd.Period('2025-03', freq='M')]['Total Sales (INR)'].sum()\n"
+                "    prev_metric = df_processed[df_processed['Date'].dt.to_period('M') == pd.Period('2025-02', freq='M')]['Total Sales (INR)'].sum()\n"
+                "    next_metric = df_processed[df_processed['Date'].dt.to_period('M') == pd.Period('2025-04', freq='M')]['Total Sales (INR)'].sum()\n"
+                "  # If you need a numeric x-axis for plotting, convert period to timestamp:\n"
+                "  #    month_ts = pd.Period('2025-03', freq='M').to_timestamp()\n"
+                "  #    plt.plot([month_ts], [main_metric])\n\n"
+                "For ranking questions, compute runner-up values (e.g. second_metric and second_label) on `df_processed`.  \n"
             )
 
             # 6.7) Construct the Gemini code prompt
@@ -166,9 +174,12 @@ if uploaded is not None:
                 f"{summaries}\n\n"
                 "Below is a small data sample (Markdown table):\n"
                 f"{snippet}\n\n"
-                "When given a user question, generate **only valid Python code** that runs against `df`.  \n"
-                "- If the question is about trends or time‐series, also generate a plot using `plt.subplots()` and store it in `main_plot_fig`.  \n"
-                "- Ensure the primary numeric result is stored in `main_metric`.  \n"
+                "When given a user question, generate **only valid Python code** that does the following:\n"
+                "1) **Preprocessing**: Examine the raw `df` and perform any filtering, cleaning, type conversions, or column derives needed to answer the question.  \n"
+                "   Store the result in a new DataFrame called `df_processed`.  \n"
+                "2) **Analysis**: Use `df_processed` for all grouping, aggregation, and plotting steps.  \n"
+                "   The key numeric result must be stored in `main_metric`.  \n"
+                "   If a plot is required, put that figure into `main_plot_fig`.  \n"
                 f"{comparison_instr}\n\n"
                 "User's question:\n"
                 f"\"\"\"{question}\"\"\"\n\n"
