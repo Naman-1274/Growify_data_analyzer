@@ -99,6 +99,16 @@ def is_question_valid(text: str, df: pd.DataFrame) -> bool:
     return False
 
 # ---------------------------------------
+# 5.1) Helper: detect quarter patterns
+# ---------------------------------------
+def contains_quarter(text: str) -> bool:
+    """
+    Returns True if text contains a pattern like 'Q1 2025', 'Q3 2024', etc.
+    """
+    # Regex: a word boundary, Q[1-4], space, 4-digit year
+    return bool(re.search(r"\bQ[1-4]\s+\d{4}\b", text, flags=re.IGNORECASE))
+
+# ---------------------------------------
 # 6) Main logic: only run if ‘uploaded’ exists
 # ---------------------------------------
 if uploaded is not None:
@@ -131,13 +141,25 @@ if uploaded is not None:
                 )
                 st.stop()
 
+            # 5.2) If the user specifically mentions a quarter, show an info note
+            if contains_quarter(question):
+                st.info(
+                    "ℹ️ For any question referencing quarters (e.g. “Q1 2025”), "
+                    "we interpret them as follows:\n"
+                    "- Q1 or q1 or 1st quarter = January to March  \n"
+                    "- Q2 or q2 or 2nd quarter = April to June  \n"
+                    "- Q3 or q3 or 3rd quarter = July to September  \n"
+                    "- Q4 or q4 or 4th quarter = October to December"
+                )
+
             # 6.4b) Initialize summary & recommendation so they never cause NameError
             summary = None
             recommendation = None
 
             # 6.5) Build context for Gemini: column summaries & sample snippet
             snippet = df_to_markdown_full(df)
-            summaries =     (df)
+            summaries = get_column_summaries(df)  # keep the existing logic
+
             history = [(item["input"], item["output"]) for item in st.session_state["memory_log"]]
 
             # 6.6) Define comparison instructions
@@ -160,6 +182,17 @@ if uploaded is not None:
             )
 
             # 6.7) Construct the Gemini code prompt
+            #    — NOTE: we append a short note about quarters so Gemini knows how to interpret them
+            quarter_note = (
+                "\n"
+                "Note: If the user's question references quarters (e.g., 'Q1 2025', 'Q2 2024'), "
+                "interpret them as:\n"
+                "- Q1 → January through March\n"
+                "- Q2 → April through June\n"
+                "- Q3 → July through September\n"
+                "- Q4 → October through December\n"
+            )
+
             code_prompt = (
                 "You are a Python/Pandas expert. A pandas DataFrame named `df` is loaded in memory, "
                 "and the following imports are available:\n"
@@ -180,7 +213,8 @@ if uploaded is not None:
                 "2) **Analysis**: Use `df_processed` for all grouping, aggregation, and plotting steps.  \n"
                 "   The key numeric result must be stored in `main_metric`.  \n"
                 "   If a plot is required, put that figure into `main_plot_fig`.  \n"
-                f"{comparison_instr}\n\n"
+                f"{comparison_instr}"
+                f"{quarter_note}\n"  # ← here is our added quarter guidance
                 "User's question:\n"
                 f"\"\"\"{question}\"\"\"\n\n"
                 "# Write Python code below (only code, no commentary):"
