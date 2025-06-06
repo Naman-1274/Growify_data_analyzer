@@ -1,6 +1,6 @@
 import pandas as pd
 
-def df_to_markdown_full(df: pd.DataFrame, max_rows: int = 20) -> str:
+def df_to_markdown_full(df: pd.DataFrame, max_rows: int = 1000) -> str:
     """
     Convert up to `max_rows` into a Markdown table.
     If the DataFrame is larger, it takes the head + tail samples.
